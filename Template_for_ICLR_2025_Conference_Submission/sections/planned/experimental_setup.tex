@@ -1,0 +1,81 @@
+\section{Experimental Setup}
+\label{sec:experimental-setup}
+
+\paragraph{Models and benchmark.}
+We evaluate Security Cuff in the deployment setting of
+OpenVLA-7B~\citep{openvla} on the LIBERO benchmark~\citep{libero}.
+Our target evaluation scope covers the full LIBERO suite, including
+\texttt{LIBERO-Spatial}, \texttt{LIBERO-Object},
+\texttt{LIBERO-Goal}, and \texttt{LIBERO-Long}.
+All experiments are organized at the rollout level, because the system
+must decide whether a trajectory should be continued, escalated, or
+intervened upon during execution rather than merely classify a single
+frame or trigger instance.
+
+\paragraph{Rollout pool and attack families.}
+The evaluation pool contains both benign and adversarial rollouts.
+Benign rollouts are divided into \texttt{task\_success} and
+\texttt{task\_fail}.
+Adversarial rollouts are grouped into three attack families:
+\texttt{attack\_GoBA}, \texttt{attack\_Drop}, and
+\texttt{attack\_State}.
+GoBA-style attacks provide physically triggered backdoor behavior via
+object- or scene-dependent triggers~\citep{goba}.
+DropVLA-family attacks provide text, visual, and joint-trigger
+conditions generated from the official data release and fine-tuning
+pipeline.
+State-based attacks provide a complementary family in which the trigger
+is tied to rollout state rather than an explicit visual artifact
+observable in the scene~\citep{statebackdoor}.
+Unless otherwise noted, our primary task is the pooled
+\texttt{success\_vs\_other} protocol, which merges task failures and
+all attack families into a single risky class.
+
+% Pending execution note:
+% The intended final protocol includes GoBA, DropVLA, and StateBackdoor
+% under a unified pooled rollout label space. If some attack families
+% are still incomplete in the current draft, keep this paragraph as the
+% target protocol and only annotate temporary gaps in comments.
+
+\paragraph{Baselines.}
+We compare the full two-layer system against both system-level and
+fast-layer baselines.
+At the system level, we compare against simplified variants that remove
+either routing or verification, so that the effect of the dual-layer
+architecture can be isolated from the effect of any single detector.
+At the fast-layer level, we compare against SAFE-style failure
+detectors~\citep{safe}, including MLP and LSTM probes, as well as
+distance-based baselines such as cosine $k$-NN and Mahalanobis
+detectors.
+These baselines test three distinct questions:
+whether rollout risk can be detected from hidden features at all,
+whether sequential modeling helps relative to static probing, and
+whether the system gain comes from the dual-layer architecture rather
+than from a single stronger feature-space classifier.
+
+\paragraph{Metrics.}
+We report both detection quality and deployment cost.
+For trajectory-level detection, we report AUROC, balanced accuracy, and
+recall at a target false positive rate.
+For early warning, we report the mean first detection step.
+For system-level defense, we report clean success rate and attack
+success rate after defense, since a runtime safety system must preserve
+normal behavior while suppressing harmful rollouts.
+For deployment cost, we report latency, memory overhead, and routing
+rate to the slow layer.
+Together, these metrics evaluate effectiveness, timeliness, and
+practicality under the formulation in
+Section~\ref{sec:problem-formulation}.
+
+\paragraph{Main tables and ablations.}
+Our main evidence block is a pair of system-level tables in the main
+paper: a whole-system comparison table and a system overhead table.
+The whole-system table reports defense effectiveness, clean success
+preservation, and attack suppression across LIBERO suites.
+The overhead table reports latency and memory cost of the deployed
+defense stack.
+Fast-layer ablations are reported separately to analyze raw versus
+residual features, SAFE-style baselines, and the effect of pooled
+training versus transfer from failure-only supervision.
+Additional cross-attack experiments evaluate mixed-family robustness
+and leave-one-family-out generalization.

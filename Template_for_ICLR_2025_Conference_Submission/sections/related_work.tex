@@ -1,0 +1,93 @@
+\section{Related Work}
+\label{sec:related}
+
+We organize prior work by defense stage and highlight the
+structural gap that motivates Security Cuff.
+
+\paragraph{Visual backdoor attacks on VLA.}
+VLA backdoor attacks share a common mechanism: an adversary poisons
+training demonstrations to bind a visual trigger to a malicious
+action sequence.
+They differ in trigger design and stealth.
+Physical-object triggers~\citep{goba} activate when an everyday
+item enters the scene; visual-patch triggers~\citep{tabvla} are
+injected via black-box fine-tuning; optimized pixel
+perturbations~\citep{badvla} are imperceptible to human inspection.
+AttackVLA~\citep{attackvla} provides a systematic benchmark
+covering both adversarial and backdoor vectors with bi-modal
+triggers.
+At the stealth frontier,
+SilentDrift~\citep{silentdrift} crafts $C^2$-continuous trajectory
+deviations that exploit action chunking, and
+State Backdoor~\citep{statebackdoor} eliminates visual artifacts
+entirely by using the robot's initial state as trigger.
+Similar vulnerabilities appear in VLM-based
+agents~\citep{beat,trojanrobot} and LLM-based
+agents~\citep{contextbackdoor}.
+These attacks preserve clean behavior while steering a subset of
+triggered rollouts toward harmful trajectories, which is why our
+defense focuses on runtime consequence verification rather than
+trigger reconstruction.
+
+\paragraph{Pre-deployment defenses.}
+Training-time methods---spectral
+signatures~\citep{tran2018spectral}, activation
+clustering~\citep{chen2019detecting},
+fine-pruning~\citep{liu2018fine}---detect or remove backdoors but
+require centralized access to the full training set, an assumption
+that breaks down as VLA systems adopt cloud-edge continuous learning
+pipelines where weights are periodically fine-tuned on
+edge-collected data.
+Input-side screening operates at test time:
+STRIP~\citep{gao2019strip} measures perturbation sensitivity;
+SampDetox~\citep{sampdetox} purifies inputs via diffusion-based
+denoising.
+Model-inspection tools such as Neural
+Cleanse~\citep{wang2019neural} reverse-engineer triggers from a
+trained model.
+SafeVLA~\citep{safevla} incorporates safety constraints during
+training but does not target deliberately planted backdoors whose
+triggers are absent from the alignment data.
+All of these methods operate \emph{upstream} of the model's output
+actions, whereas Security Cuff intervenes after policy execution has
+already begun.
+
+\paragraph{Inference-time safety monitors.}
+Most runtime approaches target \emph{accidental} failures rather
+than deliberate backdoor attacks.
+Output-uncertainty methods~\citep{mahal,ensemble_ood} flag high
+predictive entropy or OOD inputs; a capable adversary can suppress
+action-level anomalies~\citep{silentdrift}, making such signals
+unreliable as a sole defense.
+SAFE~\citep{safe} trains probes on VLA hidden states to predict
+task failure; however, a backdoored model executes the attack with
+internal coherence resembling successful task execution, so the
+failure probe detects no anomaly.
+Constraint-based filters such as VLSA~\citep{vlsa} enforce
+geometric constraints via CBF~\citep{ames2017cbf}, but cannot
+intercept actions that are geometrically safe yet semantically
+dangerous---the dominant pattern in VLA backdoor attacks.
+BERA~\citep{bera} reconstructs visual tokens to erase visual
+triggers before policy execution; however, this pre-encoding
+intervention cannot detect triggers that manifest through hidden-state
+representations rather than localizable visual
+artifacts~\citep{statebackdoor,silentdrift}.
+Together, these gaps motivate a post-encoding,
+consequence-aware defense that reads internal model signals and
+verifies predicted physical outcomes rather than searching only for
+visual artifacts or raw uncertainty.
+
+\paragraph{World models in embodied robotics.}
+Learned world models~\citep{ha2018world,daydreamer} have enabled
+imagination-based planning and latent rollouts in robotics.
+Recent world action models (WAMs), such as
+World Action Models are Zero-shot Policies~\citep{wamzero} and
+Self-Correcting VLA~\citep{scvla}, push this idea closer to control by
+using imagined futures to choose, chunk, or refine actions during
+execution.
+Security Cuff uses the same predictive machinery differently: it does
+not use rollout to improve the next action or the policy itself.
+Instead, the base policy is left fixed and the world-model rollout is
+used only as an external consequence-aware verifier that decides
+whether a proposed prefix is likely to lead to catastrophic physical
+outcomes.

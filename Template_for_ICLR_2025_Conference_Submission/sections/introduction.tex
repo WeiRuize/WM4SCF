@@ -1,0 +1,106 @@
+\section{Introduction}
+\label{sec:intro}
+
+%%% Paragraph 1: Impact statement + Territory %%%
+VLA models are being deployed in physical environments where they
+manipulate objects alongside
+humans~\citep{rt2,openvla,pi0}, introducing \emph{physical
+irreversibility}: a wrong robotic action produces consequences that
+no software rollback can undo~\citep{amodei2016concrete}.
+Meanwhile, VLA weights are increasingly updated through cloud-edge
+continuous learning pipelines, where models fine-tuned on
+edge-collected demonstrations are periodically pushed to deployed
+systems---a practice that makes post-deployment backdoor injection
+both feasible and difficult to audit.
+Visual backdoor attacks~\citep{badvla,goba,tabvla,attackvla}
+exploit this exposure: an adversary poisons training demonstrations to
+bind a visual trigger to a dangerous action sequence, reporting
+attack success rates above 97\%~\citep{goba,badvla} while leaving
+clean-input task performance---the signal on which standard
+evaluations rely---essentially unchanged.
+Pre-deployment defenses presuppose centralized training access
+that continuous cloud-edge updates no longer provide, and existing
+inference-time monitors either target \emph{accidental} failures
+or intervene in the visual input space before encoding, leaving
+post-encoding hidden-state and trajectory-level signals largely
+untapped for backdoor defense~(\S\ref{sec:related}).
+We propose \textbf{Security Cuff}, an inference-time defense for
+deployed VLA systems that detects and intercepts backdoor-triggered
+actions before they cause irreversible physical harm.
+
+%%% Paragraph 2: Method overview + key insight %%%
+Security Cuff is grounded in a \emph{physical consequence
+invariant}: for the class of VLA backdoor attacks we target---
+those whose payload is a physically dangerous action---a
+successful trigger must ultimately manifest as a harmful
+trajectory, even if the trigger itself is hidden.
+We exploit this through a dual-process
+architecture~\citep{kahneman2011thinking}: a fast statistical
+screen (System~1) paired with a slow consequence-aware verifier
+(System~2).
+The \emph{fast layer}, with a target latency of ${\leq}80\,$ms per
+step, runs an Augmented SAFE probe~\citep{safe} that detects
+hidden-state distributional shifts from clean execution---a signal
+distinct from the output-level uncertainty used by OOD monitors
+~\citep{mahal,ensemble_ood}---alongside a Temporal Trajectory
+Divergence~(TTD) monitor over short-to-medium-horizon
+\emph{observed} trajectory statistics to flag anomalous execution
+drift~\citep{attackvla}.
+The \emph{slow layer}, with a target latency of ${\leq}300\,$ms,
+rolls out a world model~\citep{ha2018world} and scores the
+\emph{predicted} long-horizon trajectory against physical safety
+criteria, directly operationalizing the physical consequence
+invariant as a runtime check.
+
+%%% Paragraph 3: Evidence preview %%%
+% TODO: fill in after experiments
+We evaluate Security Cuff on \texttt{[benchmark]} against
+\verb|[N]| state-of-the-art VLA backdoor attacks spanning
+physical-object triggers~\citep{goba}, visual
+patches~\citep{tabvla}, pixel
+perturbations~\citep{badvla}, and stealth trajectory
+deviations~\citep{silentdrift}.
+We additionally report auxiliary out-of-distribution failure
+experiments to probe whether the detector transfers beyond the
+adversarial setting.
+Security~Cuff reduces the catastrophic failure rate to
+\verb|[X%]| while maintaining task success within
+\verb|[Y%]| of the clean baseline at \verb|[Z] ms|
+overhead per step.
+Ablations confirm both layers are necessary: the fast layer alone
+misses stealth attacks; the slow layer alone exceeds real-time
+latency budgets.
+
+%%% Paragraph 4: Contributions %%%
+\paragraph{Contributions.}
+\begin{enumerate}
+\item \textbf{A trajectory-level formalization of physically
+dangerous actions under VLA backdoor attacks.}
+We formalize \emph{physically dangerous actions} induced by
+backdoor triggers in deployed VLA systems and articulate the
+\emph{physical consequence invariant}: any backdoor whose payload
+is a dangerous action must ultimately surface as a harmful
+trajectory, regardless of trigger form. This reframes
+trigger-agnostic backdoor interception as a trajectory-safety
+problem and gives the paper its primary deployment-time threat
+model; auxiliary out-of-distribution failures are used only for
+secondary robustness experiments.
+
+\item \textbf{A consequence-aware verifier based on world-model
+rollout.}
+We instantiate a \emph{consequence-aware verifier} by rolling out
+an auxiliary dynamics model from candidate prefixes and scoring the
+predicted trajectories against physical safety criteria. Unlike
+trigger-reconstruction or uncertainty-only monitors, this verifier
+reasons directly about downstream harm and requires neither trigger
+priors nor access to training data or weights.
+
+\item \textbf{A fast--slow runtime system for multi-timescale
+backdoor coverage.}
+We design Security~Cuff as a plug-and-play fast--slow runtime
+system wrapping an unmodified VLA policy. A low-latency hidden-state
+screen runs on every step, and only suspicious prefixes are
+escalated to the consequence-aware verifier. The two layers cover
+both abruptly triggered and stealthy long-horizon backdoors within
+real-time latency budgets and without retraining or weight access.
+\end{enumerate}

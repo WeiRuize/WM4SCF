@@ -1,0 +1,142 @@
+\section{Method}
+\label{sec:method}
+
+\subsection{System Overview}
+
+Security Cuff is a two-layer runtime defense for deployed VLA
+policies.
+The fast layer performs dense, low-latency screening on rollout
+prefixes, and the slow layer performs higher-cost verification only on
+the subset that has already been flagged as risky.
+This separation is the core design choice of the system.
+A single detector is typically forced to trade off recall, latency, and
+verification strength within one module, whereas the dual-layer design
+assigns broad online coverage to the fast layer and selective
+consequence-aware verification to the slow layer.
+
+Given a rollout prefix $\tau_{1:t}$, the fast layer first produces a
+stepwise risk score $s_t$.
+An online aggregation rule then updates the rollout-level risk estimate
+$r_t$ and decides whether the current prefix should be escalated.
+If escalation is triggered, the slow layer receives the same rollout
+prefix together with the cached runtime context and returns a stronger
+verification signal $v_t$.
+The final system decision is made by combining the fast screening
+signal, the routing state, and the slow verification result.
+The remainder of this section describes the fast layer, the slow layer,
+and the routing rule in turn.
+
+\subsection{Fast Layer: Rollout-Risk Screening}
+
+The fast layer is designed for high-recall online screening.
+Its role is to detect risky rollouts early under tight latency
+constraints rather than to recover the full attack mechanism behind
+every event.
+This requirement is particularly important in our main setting, where
+the positive class is backdoor-triggered dangerous execution and
+auxiliary out-of-distribution failures are evaluated separately.
+In this setting, the fast layer should separate successful execution
+from backdoor-induced risk with minimal runtime overhead.
+
+The fast layer operates on runtime-accessible signals exposed by the
+deployed policy.
+Its core input is the policy hidden state $h_t$, which summarizes the
+current observation and execution context.
+When available, we also include a short-horizon runtime context
+$u_t$, such as recent actions or proprioceptive measurements, to retain
+local execution dynamics that may not be fully captured by $h_t$
+alone.
+To anchor detection to successful execution, we construct a success
+reference bank $\mathcal{S}$ from successful training rollouts and
+derive a reference summary $\rho_t(\mathcal{S})$ for the current step.
+We then form a residual feature
+\[
+  \delta_t = h_t - \rho_t(\mathcal{S}),
+\]
+and use the detector input
+\[
+  \phi_t = [\,h_t;\delta_t;u_t\,].
+\]
+The fast detector maps $\phi_t$ to a scalar stepwise risk score
+\[
+  s_t = f_{\mathrm{fast}}(\phi_t) \in [0,1].
+\]
+
+This representation is useful because it turns online detection into a
+comparison against successful execution rather than a search for a
+single abnormal pattern.
+The risky class is heterogeneous, but successful rollouts are often
+more structurally consistent.
+The residual feature therefore provides a stable reference frame for
+online screening.
+It also avoids requiring full disentanglement of checkpoint, scene, and
+behavior factors in the hidden state.
+For deployment-time risk detection, any stable runtime signal that
+improves separation between successful and risky rollouts is potentially
+useful, and the fast layer is designed to exploit that signal under a
+lightweight inference budget.
+
+\subsection{Slow Layer: Consequence-Aware Verification}
+
+The slow layer is designed for selective verification after the fast
+layer has already raised concern.
+Fast screening is necessary for broad coverage, but it does not by
+itself provide the strongest possible basis for intervention.
+In physical environments, missed detections can lead to irreversible
+outcomes, while false alarms can unnecessarily interrupt successful
+execution.
+The slow layer addresses this tension by spending additional compute
+only on the routed subset of suspicious rollouts.
+
+When the system escalates a rollout prefix, the slow layer receives the
+current prefix together with the cached runtime context and evaluates
+whether continuing execution is likely to produce an unsafe outcome.
+We denote its verification output by
+\[
+  v_t = f_{\mathrm{slow}}(\tau_{1:t}) \in [0,1].
+\]
+The slow layer may instantiate this verification step with a learned
+world model, a short-horizon consequence predictor, or an
+attribution-oriented consistency check~\citep{ha2018world,daydreamer}.
+The defining property is not the exact verifier family, but the role of
+this stage in the system: it provides a higher-cost, higher-fidelity
+assessment for a small routed subset rather than dense scoring on every
+time step.
+
+This division of labor gives the slow layer a different capability from
+the fast layer rather than a slower copy of the same detector.
+The fast layer is optimized for recall under strict latency
+constraints.
+The slow layer is optimized for stronger verification on ambiguous or
+high-risk cases.
+Together, the two layers support a system-level tradeoff in which most
+rollouts are handled cheaply, while difficult cases receive additional
+reasoning before the final intervention decision is made.
+
+\subsection{Online Aggregation and Routing}
+
+The fast layer emits stepwise scores, but deployment decisions must be
+made at the rollout level.
+We therefore maintain an online aggregated risk estimate
+\[
+  r_t = g(r_{t-1}, s_t),
+\]
+where $g$ is a lightweight online update rule.
+The system continues normal execution while $r_t$ remains below the
+escalation threshold $\gamma$.
+Once $r_t \ge \gamma$, the current rollout prefix is routed to the slow
+layer, which returns the verification score $v_t$.
+The final action is then determined by a decision rule
+\[
+  d_t = H(r_t, v_t),
+\]
+which maps the current fast-layer risk and slow-layer verification to a
+deployment action such as continue, warn, or intervene.
+
+This routing rule couples the two layers into a single system.
+It keeps the common-case computation close to the fast detector while
+reserving expensive verification for the subset that is most likely to
+benefit from it.
+As a result, the overall design targets three objectives
+simultaneously: early warning on risky rollouts, controlled false
+alarms on successful rollouts, and bounded deployment-time overhead.

@@ -1,0 +1,20 @@
+We propose \textbf{Security~Cuff}, a dual-layer inference-time defense
+for deployed Vision-Language-Action (VLA) models that detects and
+intercepts backdoor-triggered actions before they cause irreversible
+physical harm.
+As VLA weights are increasingly updated through cloud-edge continuous
+learning pipelines, training-time defenses lose their
+centralized-access assumption, while existing inference-time monitors
+still focus on accidental failures or visual trigger reconstruction
+rather than post-encoding hidden-state and trajectory-level signals.
+Our key observation is a \emph{physical consequence invariant}: if a
+backdoor is designed to induce dangerous behavior, the compromised
+rollout must ultimately surface a harmful trajectory, regardless of
+trigger form.
+Security Cuff exploits this with a fast hidden-state screen and a slow
+consequence-aware verifier based on world-model rollout.
+On \texttt{[benchmark]} against \texttt{[N]} attacks,
+Security~Cuff reduces the catastrophic failure rate to
+\texttt{[X\%]} while maintaining task success within
+\texttt{[Y\%]} of the clean baseline at \texttt{[Z]\,ms}
+overhead per step.
