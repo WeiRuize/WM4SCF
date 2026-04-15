@@ -1,337 +1,214 @@
 """
 train_critic.py
 ===============
-Safety Critic (fast layer) training script.
+阶段二：Safety Critic training.
 
-Pipeline:
-  1. Load labeled trajectory dataset (data/labeled_trajectories/).
-  2. Load frozen RSSM world model (for feature context, not directly used in critic).
-  3. Load pretrained OpenVLA to extract hidden states h_t for each step.
-     (Note: hidden states must be pre-extracted and stored; see scripts/encode_trajectories.sh)
-  4. Build reference bank from success-labeled hidden states.
-  5. Train SafetyCritic binary classifier (is_attack vs. success).
+Pipeline (PROJECT_OVERVIEW §模块二):
+    1. Load pre-encoded latent episodes from data/encode_latents.py output.
+    2. Compute TD(λ) accumulated discounted costs for each latent step.
+    3. Regress SafetyCritic(latent_t) → C_target_t with MSE.
+    4. Update Lagrangian log_λ to enforce E[C] <= budget.
 
-Pre-extraction assumption:
-  Before calling this script, run scripts/encode_trajectories.sh to extract
-  VLA hidden states for all episodes and store them alongside the trajectory
-  data as .npz files with an extra key "vla_hidden" of shape (T, 4096).
-  This avoids loading the full VLA during critic training.
-
-Run on server:
-    cd <project_root>
-    python train/train_critic.py --config configs/critic.yaml [--override key=value ...]
-
-Outputs:
-    checkpoints/critic.pt       — SafetyCritic weights + projector
-    checkpoints/reference_bank.npz
-    logs/critic/                — TensorBoard logs
+The RSSM/encoder checkpoint is NEVER loaded here; we operate purely on the
+cached .pt files.  This makes critic training cheap and reproducible.
 """
 
+from __future__ import annotations
 import argparse
 import pathlib
 import sys
 import time
 
-import numpy as np
 import torch
-import torch.nn.functional as F
 import yaml
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Dataset, random_split
 from torch.utils.tensorboard import SummaryWriter
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
-from models.critic import SafetyCritic, RiskAggregator
-from data.dataset import LabeledTrajectoryDataset, collate_episodes, LABEL_SUCCESS
-from data.reference_bank import ReferenceBank
+from models.safety_critic import SafetyCritic, LagrangianSafetyCritic
 
 
-# ── Config helpers ────────────────────────────────────────────────────────
+class LatentEpisodeDataset(Dataset):
+    """
+    Each item is one pre-encoded episode:
+        latent (T, feat), costs (T,), is_poison (scalar)
+    We train step-wise, so __getitem__ returns all timesteps flattened; the
+    collate_fn stacks them into a single (N, feat) batch per call.
+    """
 
-def load_config(path: str, overrides: list) -> dict:
-    with open(path) as f:
+    def __init__(self, root: str | pathlib.Path):
+        self.files = sorted(pathlib.Path(root).glob("*.pt"))
+        if not self.files:
+            raise RuntimeError(f"[LatentEpisodeDataset] No .pt under {root}")
+
+    def __len__(self) -> int:
+        return len(self.files)
+
+    def __getitem__(self, idx: int) -> dict:
+        return torch.load(self.files[idx], map_location="cpu")
+
+
+def td_lambda_cost(costs: torch.Tensor, horizon: int, gamma: float) -> torch.Tensor:
+    """
+    C_target_t = Σ_{k=0}^{K} γ^k · c_{t+k}      truncated discounted return.
+
+    Args:
+        costs:   (T,) per-step costs in [0, 1]
+        horizon: truncation horizon K
+        gamma:   discount factor
+    Returns:
+        targets: (T,)
+    """
+    T = costs.shape[0]
+    out = torch.zeros_like(costs)
+    for k in range(horizon + 1):
+        idx = torch.arange(T)
+        src = torch.clamp(idx + k, max=T - 1)
+        out = out + (gamma ** k) * costs[src]
+    return out
+
+
+def flatten_batch(episodes: list[dict], horizon: int, gamma: float):
+    latents, targets = [], []
+    for ep in episodes:
+        latent = ep["latent"].float()
+        cost = ep["costs"].float()
+        tgt = td_lambda_cost(cost, horizon, gamma)
+        latents.append(latent)
+        targets.append(tgt)
+    return torch.cat(latents, dim=0), torch.cat(targets, dim=0)
+
+
+def collate_latent(batch: list[dict]) -> list[dict]:
+    return batch   # stash; flatten_batch handles it
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="configs/critic.yaml")
+    parser.add_argument("--latent_dir", required=True)
+    parser.add_argument("--override", nargs="*", default=[])
+    args = parser.parse_args()
+
+    with open(args.config) as f:
         cfg = yaml.safe_load(f)
-    for ov in overrides:
+    # Minimal override loop; mirror train_rssm's behaviour.
+    for ov in args.override:
         k, v = ov.split("=", 1)
         keys = k.split(".")
         node = cfg
-        for key in keys[:-1]:
-            node = node.setdefault(key, {})
+        for kk in keys[:-1]:
+            node = node.setdefault(kk, {})
         try:
             v = int(v)
         except ValueError:
             try:
                 v = float(v)
             except ValueError:
-                if v.lower() == "true":
-                    v = True
-                elif v.lower() == "false":
-                    v = False
+                pass
         node[keys[-1]] = v
-    return cfg
 
-
-# ── Dataset with pre-extracted VLA hidden states ──────────────────────────
-
-class HiddenStateDataset(LabeledTrajectoryDataset):
-    """
-    Extends LabeledTrajectoryDataset to also load pre-extracted VLA hidden
-    states (key "vla_hidden", shape (T, 4096)) from the .npz episode files.
-    """
-
-    def __getitem__(self, idx: int) -> dict:
-        # super().__getitem__() calls sample_window and stores the window start
-        # in self._last_window_start — reuse it to align the hidden state slice.
-        out = super().__getitem__(idx)
-        ep_key = self._keys[idx % len(self._keys)]
-        ep = self.episodes[ep_key]
-        if "vla_hidden" not in ep:
-            raise KeyError(
-                f"Episode {ep_key} is missing 'vla_hidden'. "
-                "Run train/encode_trajectories.py first."
-            )
-        idx_start = self._last_window_start   # set by parent's sample_window call
-        hidden_window = ep["vla_hidden"][idx_start: idx_start + self.window_len]
-        if len(hidden_window) < self.window_len:
-            pad = np.zeros(
-                (self.window_len - len(hidden_window), ep["vla_hidden"].shape[1]),
-                dtype=np.float32,
-            )
-            hidden_window = np.concatenate([hidden_window, pad], axis=0)
-        out["vla_hidden"] = torch.from_numpy(hidden_window.astype(np.float32))
-        return out
-
-
-# ── Reference bank construction ────────────────────────────────────────────
-
-@torch.no_grad()
-def build_reference_bank(
-    critic: SafetyCritic,
-    dataset: HiddenStateDataset,
-    cfg: dict,
-    device: str,
-) -> ReferenceBank:
-    """Populate the reference bank with projected hidden states from success episodes."""
-    bank_cfg = cfg["reference_bank"]
-    crit_cfg = cfg["critic"]
-    bank = ReferenceBank(
-        capacity=bank_cfg["capacity"],
-        proj_dim=crit_cfg["proj_dim"],
-        device=device,
-    )
-    critic.eval()
-    added = 0
-    for key, ep in dataset.episodes.items():
-        label = int(ep.get("label", -1))
-        if label != LABEL_SUCCESS:
-            continue
-        if "vla_hidden" not in ep:
-            continue
-        h = torch.from_numpy(ep["vla_hidden"].astype(np.float32)).to(device)  # (T, 4096)
-        h_proj = critic.project(h)                                              # (T, proj_dim)
-        bank.add_episode(h_proj)
-        added += 1
-    print(f"[train_critic] Reference bank built from {added} success episodes, {len(bank)} vectors.")
-    return bank
-
-
-# ── Training loop ──────────────────────────────────────────────────────────
-
-def train_epoch(
-    critic: SafetyCritic,
-    bank: ReferenceBank,
-    loader: DataLoader,
-    optimizer: torch.optim.Optimizer,
-    cfg: dict,
-    device: str,
-    pos_weight: torch.Tensor,
-) -> dict:
-    critic.train()
-    crit_cfg = cfg["critic"]
-    total_loss, total_correct, total_n = 0.0, 0, 0
-
-    for batch in loader:
-        vla_hidden = batch["vla_hidden"].to(device)     # (B, T, 4096)
-        actions = batch["action"].to(device)            # (B, T, action_dim)
-        labels = batch["is_attack"].to(device)          # (B,)  0 or 1
-        B, T = vla_hidden.shape[:2]
-
-        context_h = crit_cfg["context_horizon"]
-        action_dim = crit_cfg["action_dim"]
-
-        # Use middle step of window for per-window prediction
-        # (could also predict per-step and pool; this is the simple variant)
-        t_mid = T // 2
-        h_t = vla_hidden[:, t_mid, :]                   # (B, 4096)
-
-        # Reference: use global bank mean (could be made step-aligned)
-        ref = bank.global_mean().unsqueeze(0).expand(B, -1).to(device)   # (B, proj_dim)
-
-        # Action context: last context_h steps ending at t_mid
-        start = max(0, t_mid - context_h)
-        act_ctx = actions[:, start: t_mid, :]           # (B, ≤context_h, action_dim)
-        # Pad if short
-        pad_len = context_h - act_ctx.shape[1]
-        if pad_len > 0:
-            act_ctx = F.pad(act_ctx, (0, 0, pad_len, 0))
-
-        scores = critic(h_t, ref, act_ctx)              # (B,)
-        loss = F.binary_cross_entropy_with_logits(
-            torch.logit(scores.clamp(1e-6, 1 - 1e-6)),
-            labels.float(),
-            pos_weight=pos_weight,
-        )
-
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(critic.parameters(), 10.0)
-        optimizer.step()
-
-        preds = (scores >= 0.5).long()
-        correct = (preds == labels.long()).sum().item()
-        total_loss += loss.item() * B
-        total_correct += correct
-        total_n += B
-
-    return {
-        "loss": total_loss / max(total_n, 1),
-        "acc": total_correct / max(total_n, 1),
-    }
-
-
-@torch.no_grad()
-def validate(
-    critic: SafetyCritic,
-    bank: ReferenceBank,
-    loader: DataLoader,
-    cfg: dict,
-    device: str,
-) -> dict:
-    critic.eval()
-    crit_cfg = cfg["critic"]
-    all_scores, all_labels = [], []
-
-    for batch in loader:
-        vla_hidden = batch["vla_hidden"].to(device)
-        actions = batch["action"].to(device)
-        labels = batch["is_attack"]
-        B, T = vla_hidden.shape[:2]
-        context_h = crit_cfg["context_horizon"]
-        t_mid = T // 2
-        h_t = vla_hidden[:, t_mid, :]
-        ref = bank.global_mean().unsqueeze(0).expand(B, -1).to(device)
-        start = max(0, t_mid - context_h)
-        act_ctx = actions[:, start: t_mid, :]
-        pad_len = context_h - act_ctx.shape[1]
-        if pad_len > 0:
-            act_ctx = F.pad(act_ctx, (0, 0, pad_len, 0))
-        scores = critic(h_t, ref, act_ctx)
-        all_scores.append(scores.cpu())
-        all_labels.append(labels)
-
-    scores = torch.cat(all_scores)
-    labels = torch.cat(all_labels)
-    preds = (scores >= 0.5).long()
-    acc = (preds == labels.long()).float().mean().item()
-
-    # AUROC via simple threshold sweep
-    auroc = _auroc(scores.numpy(), labels.numpy())
-    return {"val_acc": acc, "val_auroc": auroc}
-
-
-def _auroc(scores: np.ndarray, labels: np.ndarray) -> float:
-    """Compute AUROC via threshold sweep."""
-    from sklearn.metrics import roc_auc_score
-    try:
-        return float(roc_auc_score(labels, scores))
-    except Exception:
-        return float("nan")
-
-
-# ── Checkpoint helpers ─────────────────────────────────────────────────────
-
-def save_checkpoint(path: str, critic: SafetyCritic, epoch: int):
-    pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"epoch": epoch, "state_dict": critic.state_dict()}, path)
-    print(f"[train_critic] Saved checkpoint → {path}")
-
-
-# ── Main ───────────────────────────────────────────────────────────────────
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/critic.yaml")
-    parser.add_argument("override", nargs="*")
-    args = parser.parse_args()
-
-    cfg = load_config(args.config, args.override)
     t_cfg = cfg["training"]
     device = t_cfg["device"]
     torch.manual_seed(t_cfg.get("seed", 0))
 
-    # Build critic
-    critic = SafetyCritic.from_config(cfg).to(device)
-    n_params = sum(p.numel() for p in critic.parameters())
-    print(f"[train_critic] Critic parameters: {n_params:,}")
+    # Feature size is written into the cached episodes.
+    ds = LatentEpisodeDataset(args.latent_dir)
+    feat_size = torch.load(ds.files[0])["latent"].shape[-1]
+    print(f"[train_critic] feat_size={feat_size}  episodes={len(ds)}")
 
-    # Dataset
-    full_ds = HiddenStateDataset(
-        cfg["paths"]["data_dir"],
-        window_len=64,
-        seed=t_cfg.get("seed", 0),
+    val_len = max(1, int(len(ds) * t_cfg["val_split"]))
+    train_ds, val_ds = random_split(
+        ds, [len(ds) - val_len, val_len],
+        generator=torch.Generator().manual_seed(t_cfg.get("seed", 0)),
     )
-    val_size = max(1, int(len(full_ds) * t_cfg["val_split"]))
-    train_size = len(full_ds) - val_size
-    train_ds, val_ds = random_split(full_ds, [train_size, val_size])
+    train_loader = DataLoader(
+        train_ds, batch_size=t_cfg["batch_size"], shuffle=True,
+        num_workers=2, collate_fn=collate_latent,
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=t_cfg["batch_size"], shuffle=False,
+        num_workers=2, collate_fn=collate_latent,
+    )
 
-    train_loader = DataLoader(train_ds, batch_size=t_cfg["batch_size"], shuffle=True,
-                               collate_fn=collate_episodes, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_ds, batch_size=t_cfg["batch_size"], shuffle=False,
-                             collate_fn=collate_episodes, num_workers=4)
+    critic = SafetyCritic.from_config(cfg, feat_size=feat_size).to(device)
+    lag = LagrangianSafetyCritic(
+        critic,
+        budget=cfg["lagrangian"]["budget"],
+        lambda_init=cfg["lagrangian"]["lambda_init"],
+        lambda_max=cfg["lagrangian"]["lambda_max"],
+    ).to(device)
 
-    # Reference bank (from success episodes in full dataset)
-    bank = build_reference_bank(critic, full_ds, cfg, device)
-    bank.save(str(pathlib.Path(cfg["paths"]["checkpoint"]).parent / "reference_bank.npz"))
+    opt_critic = torch.optim.Adam(
+        critic.parameters(), lr=t_cfg["lr"], weight_decay=t_cfg["weight_decay"],
+    )
+    opt_lambda = torch.optim.Adam([lag.log_lambda], lr=cfg["lagrangian"]["lambda_lr"])
 
-    # Optimizer
-    optimizer = torch.optim.AdamW(critic.parameters(), lr=t_cfg["lr"], weight_decay=t_cfg["weight_decay"])
-    pos_weight = torch.tensor([t_cfg["pos_weight"]], device=device)
-
-    # Logging
     logdir = pathlib.Path(cfg["paths"]["logdir"])
     logdir.mkdir(parents=True, exist_ok=True)
-    writer = SummaryWriter(log_dir=str(logdir))
+    writer = SummaryWriter(str(logdir))
 
-    print(f"[train_critic] Training for {t_cfg['epochs']} epochs on {device}")
-    best_auroc = 0.0
+    horizon = cfg["critic"]["td_horizon"]
+    gamma = cfg["critic"]["gamma"]
+    epochs = t_cfg["epochs"]
+    step = 0
+    t0 = time.time()
 
-    for epoch in range(1, t_cfg["epochs"] + 1):
-        train_metrics = train_epoch(critic, bank, train_loader, optimizer, cfg, device, pos_weight)
-        val_metrics = validate(critic, bank, val_loader, cfg, device)
+    for epoch in range(epochs):
+        critic.train()
+        for episodes in train_loader:
+            latent, target = flatten_batch(episodes, horizon, gamma)
+            latent = latent.to(device)
+            target = target.to(device)
 
-        print(
-            f"[epoch {epoch:>3d}/{t_cfg['epochs']}]  "
-            f"loss={train_metrics['loss']:.4f}  acc={train_metrics['acc']:.3f}  "
-            f"val_acc={val_metrics['val_acc']:.3f}  val_auroc={val_metrics['val_auroc']:.3f}"
-        )
+            loss_c = lag.critic_loss(latent, target)
+            opt_critic.zero_grad()
+            loss_c.backward()
+            opt_critic.step()
 
-        for k, v in {**train_metrics, **val_metrics}.items():
-            if not (isinstance(v, float) and v != v):   # skip NaN
-                writer.add_scalar(f"critic/{k}", v, epoch)
+            loss_lag = lag.lagrangian_loss(target)
+            opt_lambda.zero_grad()
+            loss_lag.backward()
+            opt_lambda.step()
 
-        if val_metrics["val_auroc"] > best_auroc:
-            best_auroc = val_metrics["val_auroc"]
-            save_checkpoint(cfg["paths"]["checkpoint"], critic, epoch)
+            if step % t_cfg["log_every"] == 0:
+                writer.add_scalar("critic/loss", loss_c.item(), step)
+                writer.add_scalar("critic/lambda", lag.lambda_value.item(), step)
+                writer.add_scalar("critic/cost_mean", target.mean().item(), step)
+                print(f"[ep {epoch:>3d} step {step:>6d}] "
+                      f"L_c={loss_c.item():.4f}  λ={lag.lambda_value.item():.3f}  "
+                      f"cost_mean={target.mean().item():.3f}")
+            step += 1
 
-        if epoch % t_cfg.get("save_every", 5) == 0:
-            save_checkpoint(
-                str(pathlib.Path(cfg["paths"]["checkpoint"]).with_stem(f"critic_ep{epoch}")),
-                critic, epoch,
-            )
+        # Validation
+        critic.eval()
+        with torch.no_grad():
+            vl_losses = []
+            for episodes in val_loader:
+                latent, target = flatten_batch(episodes, horizon, gamma)
+                latent = latent.to(device)
+                target = target.to(device)
+                vl_losses.append(lag.critic_loss(latent, target).item())
+            val_loss = sum(vl_losses) / max(len(vl_losses), 1)
+            writer.add_scalar("critic/val_loss", val_loss, step)
+            print(f"[ep {epoch:>3d}] val_loss={val_loss:.4f} elapsed={time.time() - t0:.0f}s")
+
+        if (epoch + 1) % t_cfg["save_every"] == 0 or epoch == epochs - 1:
+            ckpt = {
+                "epoch": epoch + 1,
+                "critic": critic.state_dict(),
+                "log_lambda": lag.log_lambda.detach().cpu(),
+                "feat_size": feat_size,
+            }
+            out = pathlib.Path(cfg["paths"]["checkpoint"])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(ckpt, out)
+            print(f"[train_critic] Saved → {out}")
 
     writer.close()
-    print(f"[train_critic] Done. Best val AUROC: {best_auroc:.4f}")
+    print("[train_critic] Training complete.")
 
 
 if __name__ == "__main__":

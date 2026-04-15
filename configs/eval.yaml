@@ -1,0 +1,28 @@
+# Evaluation / online-Guardian configuration.
+# Used by eval/eval_openvla.py and eval/eval_pi0.py.
+
+eval:
+  safety_threshold: 0.5
+  gamma: 0.9
+  num_episodes_per_task: 50       # LIBERO-10 → 500 total per experiment
+  tasks:
+    - libero_10
+  seed: 42
+
+vla:
+  openvla:
+    checkpoint: FILL_ME             # path to poisoned OpenVLA .ckpt (experiment A/B)
+    unnorm_key: libero_10
+    device: cuda:0
+  pi0:
+    checkpoint: FILL_ME             # clean π₀ checkpoint (experiment C/D)
+    chunk_horizon: 8
+    device: cuda:0
+
+ablation:
+  rollout_horizons: [1, 4, 8, 16]   # π₀ chunk-horizon sweep (paper core ablation)
+
+paths:
+  rssm_checkpoint: checkpoints/rssm/best.ckpt
+  critic_checkpoint: checkpoints/critic/best.ckpt
+  results_dir: eval_results

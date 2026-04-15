@@ -34,7 +34,7 @@ from models.encoder import RobotObsEncoder
 from models.decoder import RobotObsDecoder
 from models.rssm import RSSM
 from models.dreamer_utils import Optimizer
-from data.dataset import make_dataloader
+from data.libero_dataset import make_libero_loader
 
 
 # ── Config helpers ────────────────────────────────────────────────────────
@@ -165,18 +165,18 @@ def save_checkpoint(path: str, encoder, rssm, decoder, step: int):
     pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
     torch.save({
         "step": step,
-        "encoder_state_dict": encoder.state_dict(),
-        "rssm_state_dict": rssm.state_dict(),
-        "decoder_state_dict": decoder.state_dict(),
+        "encoder": encoder.state_dict(),
+        "rssm": rssm.state_dict(),
+        "decoder": decoder.state_dict(),
     }, path)
     print(f"[train_rssm] Saved checkpoint → {path} (step {step})")
 
 
 def load_checkpoint(path: str, encoder, rssm, decoder, device: str) -> int:
     ckpt = torch.load(path, map_location=device)
-    encoder.load_state_dict(ckpt["encoder_state_dict"])
-    rssm.load_state_dict(ckpt["rssm_state_dict"])
-    decoder.load_state_dict(ckpt["decoder_state_dict"])
+    encoder.load_state_dict(ckpt["encoder"])
+    rssm.load_state_dict(ckpt["rssm"])
+    decoder.load_state_dict(ckpt["decoder"])
     step = ckpt.get("step", 0)
     print(f"[train_rssm] Loaded checkpoint from {path} (step {step})")
     return step
@@ -214,13 +214,13 @@ def main():
         use_amp=use_amp,
     )
 
-    # DataLoader
-    loader = make_dataloader(
+    # DataLoader (clean LIBERO only — NEVER load poisoned data at Stage 1)
+    loader = make_libero_loader(
         cfg["paths"]["traindir"],
         window_len=t_cfg["batch_length"],
+        image_size=cfg["encoder"]["image_shape"][0],
         batch_size=t_cfg["batch_size"],
         seed=t_cfg.get("seed", 0),
-        labeled=False,
         num_workers=4,
     )
     data_iter = iter(loader)
