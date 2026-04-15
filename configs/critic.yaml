@@ -1,0 +1,51 @@
+# Safety Critic Configuration (Fast Layer)
+# All paths are relative to the project root.
+
+# ── Model ──────────────────────────────────────────────────────────────────
+critic:
+  # VLA hidden-state projection
+  vla_hidden_dim: 4096         # OpenVLA LLaMA-2 7B last-layer hidden dim
+  proj_dim: 512                # project h_t down to this before residual computation
+
+  # Short-horizon action context
+  action_dim: 7                # robot action dimension
+  context_horizon: 5           # how many recent steps of actions to concatenate
+  # context vector dim = context_horizon * action_dim = 35
+
+  # Classifier MLP
+  # input dim = proj_dim + proj_dim + context_horizon * action_dim = 1059
+  mlp_layers: 4
+  mlp_units: 256
+  dropout: 0.1
+  act: SiLU
+
+# ── Reference Bank ─────────────────────────────────────────────────────────
+reference_bank:
+  capacity: 10000              # max number of projected h_t vectors stored
+  update_strategy: fifo        # first-in-first-out when capacity exceeded
+
+# ── Online Detector ────────────────────────────────────────────────────────
+detector:
+  escalation_threshold: 0.65   # gamma: escalate to slow layer when r_t >= gamma
+  aggregation: ema             # ema | max_window
+  ema_alpha: 0.3               # EMA coefficient for r_t update
+
+# ── Training ───────────────────────────────────────────────────────────────
+training:
+  seed: 0
+  device: cuda:0
+  batch_size: 64
+  epochs: 100
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+  pos_weight: 5.0              # BCEWithLogitsLoss positive-class weight (attacks are rare)
+  val_split: 0.1               # fraction of data used for validation
+  log_every: 50                # batches between log prints
+  save_every: 5                # epochs between checkpoint saves
+
+# ── Paths ──────────────────────────────────────────────────────────────────
+paths:
+  logdir: logs/critic
+  data_dir: data/labeled_trajectories
+  rssm_checkpoint: checkpoints/rssm.pt     # loaded but frozen during critic training
+  checkpoint: checkpoints/critic.pt

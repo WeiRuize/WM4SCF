@@ -1,0 +1,40 @@
+# SafeVLA / Security Cuff — Python dependencies
+# Install with:  pip install -r requirements.txt
+#
+# Server-side (GPU training + evaluation) also requires:
+#   flash-attn>=2.0         (for OpenVLA generation with flash attention)
+#   bitsandbytes>=0.41      (optional, for 8-bit / 4-bit VLA loading)
+#   openvla-main            (pip install -e openvla-main)
+#
+# Note: dreamerv3-torch-main is used as a source reference only;
+# all relevant code has been adapted into models/dreamer_utils.py.
+
+# ── Core deep-learning ────────────────────────────────────────────
+torch>=2.1.0
+torchvision>=0.16.0
+
+# ── HuggingFace stack (required by OpenVLA) ───────────────────────
+transformers>=4.40.0
+accelerate>=0.26.0
+timm>=0.9.10
+
+# ── Data / numerical ─────────────────────────────────────────────
+numpy>=1.24.0
+Pillow>=10.0.0
+
+# ── Config ───────────────────────────────────────────────────────
+PyYAML>=6.0
+
+# ── Logging ──────────────────────────────────────────────────────
+tensorboard>=2.14.0
+
+# ── Evaluation metrics ───────────────────────────────────────────
+scikit-learn>=1.3.0
+
+# ── Robot-environment evaluation (LIBERO) ────────────────────────
+# Install separately per LIBERO instructions:
+#   pip install -r openvla-main/experiments/robot/libero/libero_requirements.txt
+# libero
+
+# ── Development / testing ────────────────────────────────────────
+pytest>=7.4.0

@@ -1,0 +1,53 @@
+# Safety Guardian Configuration (Slow Layer)
+# All paths are relative to the project root.
+
+# NOTE: The guardian's encoder and RSSM use 128×128 images (power-of-2).
+# Observations must be downsampled from 224×224 to 128×128 before being passed in.
+
+# ── World-Model Rollout ────────────────────────────────────────────────────
+guardian:
+  rollout_horizon: 10          # imagined future steps used for consequence scoring
+
+  # Safety-head MLP (applied to each imagined RSSM feature)
+  # input dim = rssm.stoch * rssm.discrete + rssm.deter = 32*32 + 512 = 1536
+  safety_head_layers: 3
+  safety_head_units: 256
+  safety_head_act: SiLU
+
+  # Aggregation over imagined horizon
+  score_aggregation: mean      # mean | max
+
+  # Verification threshold: v_t >= safety_threshold → intervene
+  safety_threshold: 0.5
+
+# ── Physical Safety Criteria ───────────────────────────────────────────────
+# These are used by the rule-based safety scorer that augments the learned head.
+# Values should match the LIBERO/OpenVLA action convention (7-D EEF delta).
+action_bounds:
+  xyz_delta_max: 0.10          # max absolute delta per axis (m)
+  rpy_delta_max: 0.50          # max absolute delta per axis (rad)
+  gripper_max: 1.0             # gripper range [0, 1]
+
+workspace_bounds:
+  x: [-0.8, 0.8]
+  y: [-0.8, 0.8]
+  z: [0.0, 1.2]
+
+# ── Training (safety head only; RSSM is frozen) ────────────────────────────
+training:
+  seed: 0
+  device: cuda:0
+  batch_size: 32
+  epochs: 50
+  lr: 3.0e-5
+  weight_decay: 1.0e-4
+  log_every: 20
+  save_every: 5
+
+# ── Paths ──────────────────────────────────────────────────────────────────
+paths:
+  logdir: logs/guardian
+  data_dir: data/labeled_trajectories
+  rssm_checkpoint: checkpoints/rssm.pt
+  critic_checkpoint: checkpoints/critic.pt
+  checkpoint: checkpoints/guardian.pt

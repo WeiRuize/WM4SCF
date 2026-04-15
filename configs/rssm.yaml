@@ -1,0 +1,85 @@
+# RSSM World-Model Configuration
+# Adapted from dreamerv3-torch-main/configs.yaml defaults.
+# All paths are relative to the project root.
+
+# ── Model ──────────────────────────────────────────────────────────────────
+rssm:
+  stoch: 32            # stochastic state size (number of categories in discrete mode)
+  deter: 512           # deterministic GRU state size
+  hidden: 512          # MLP hidden size for img_in / img_out / obs_out layers
+  rec_depth: 1         # GRU recurrent depth
+  discrete: 32         # categories per stochastic unit (0 = continuous)
+  act: SiLU
+  norm: true
+  mean_act: none       # activation on mean (continuous only)
+  std_act: sigmoid2    # activation on std  (continuous only)
+  min_std: 0.1
+  unimix_ratio: 0.01   # uniform mixing in discrete prior
+  initial: learned     # initial state: learned | zeros
+  num_actions: 7       # robot action dimension (OpenVLA: 7-D EEF delta)
+
+# Derived: feat_size = stoch * discrete + deter = 32*32 + 512 = 1536
+
+encoder:
+  # World-model training uses 128×128 (power of 2) for ConvTranspose compatibility.
+  # The VLA inference pipeline uses 224×224; images are downsampled before RSSM encoding.
+  image_shape: [128, 128, 3]   # H × W × C (must be power-of-2 for CNN encoder/decoder)
+  cnn_depth: 32                # base channel count; doubles each stride layer
+  kernel_size: 4
+  minres: 4                    # minimum spatial resolution before flattening
+  act: SiLU
+  norm: true
+  # Proprioception MLP branch
+  proprio_dim: 7               # joint angles / EEF pose dimension
+  proprio_layers: 3
+  proprio_units: 256
+  # Total embed_dim is auto-computed from CNN outdim + proprio_units
+
+decoder:
+  mlp_layers: 5
+  mlp_units: 1024
+  cnn_depth: 32
+  kernel_size: 4
+  minres: 4
+  act: SiLU
+  norm: true
+  cnn_sigmoid: false
+  image_dist: mse              # mse | normal
+  vector_dist: symlog_mse      # reconstruction loss for proprio
+  outscale: 1.0
+
+# ── Training ───────────────────────────────────────────────────────────────
+training:
+  seed: 0
+  device: cuda:0
+  precision: 32                # 32 | 16 (AMP)
+  batch_size: 16
+  batch_length: 64             # time steps per training sequence
+  steps: 500000
+  model_lr: 1.0e-4
+  opt_eps: 1.0e-8
+  grad_clip: 1000
+  weight_decay: 0.0
+  opt: adam
+  kl_free: 1.0
+  dyn_scale: 0.5
+  rep_scale: 0.1
+  grad_heads: [decoder]        # heads that receive gradients from the model loss
+  reward_head:
+    layers: 2
+    dist: symlog_disc
+    loss_scale: 1.0
+    outscale: 0.0
+  cont_head:
+    layers: 2
+    loss_scale: 1.0
+    outscale: 1.0
+
+  log_every: 1000              # steps between TensorBoard writes
+  save_every: 10000            # steps between checkpoint saves
+
+# ── Paths ──────────────────────────────────────────────────────────────────
+paths:
+  logdir: logs/rssm
+  traindir: data/trajectories
+  checkpoint: checkpoints/rssm.pt
