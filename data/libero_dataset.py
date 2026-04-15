@@ -7,12 +7,14 @@ Only clean data is touched here — never load GOBA-poisoned episodes through
 this class.  A separate loader (`poison_dataset.py`) handles the poisoned
 split for Safety Critic training.
 
-HDF5 layout (LIBERO convention)
+HDF5 layout (LIBERO convention, cross-checked against
+openvla-main/experiments/robot/libero/regenerate_libero_dataset.py)
     data/
       demo_0/
-        actions           (T, 7)
-        obs/agentview_rgb (T, 128, 128, 3) uint8
-        obs/ee_states     (T, 7)           float32
+        actions              (T, 7)             float32
+        obs/agentview_rgb    (T, 128, 128, 3)   uint8
+        obs/joint_states     (T, 7)             float32   # 7-DoF arm joints
+        obs/ee_states        (T, 6)             float32   # unused (ee pose)
       demo_1/
         ...
 
@@ -78,7 +80,7 @@ class LiberoDataset(Dataset):
         with h5py.File(fp, "r") as f:
             grp = f[f"data/{key}"]
             img = grp["obs/agentview_rgb"][start:start + L]
-            proprio = grp["obs/ee_states"][start:start + L]
+            proprio = grp["obs/joint_states"][start:start + L]
             action = grp["actions"][start:start + L]
 
         window = {

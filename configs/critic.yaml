@@ -1,32 +1,36 @@
-# Safety Critic Configuration (Stage 2 — latent-based)
-# Trained on pre-encoded RSSM latent features from data/encode_latents.py.
+# Safety Critic configuration — Stage 2.
+#
+# Self-supervised training on the frozen RSSM world model via imagination
+# rollouts; see train/train_critic.py for the derivation.  No backdoor
+# labels are required; both clean and poisoned HDF5 roots are consumed as
+# unlabelled data and the clean-only world model produces the cost signal.
 
 critic:
-  mlp_layers: 2
-  mlp_units: 256
+  mlp_layers: 3
+  mlp_units: 512
   dropout: 0.1
   act: SiLU
-  td_horizon: 10           # K in C_target_t = Σ_{k=0}^{K} γ^k · c_{t+k}
-  gamma: 0.9
-
-lagrangian:
-  budget: 0.1              # target average cost b
-  lambda_init: 1.0
-  lambda_max: 100.0
-  lambda_lr: 1.0e-3
+  gamma: 0.9                # γ for the truncated discounted return target
 
 training:
   seed: 0
   device: cuda:0
-  batch_size: 32           # episodes per batch (latent steps are flattened inside)
-  epochs: 50
-  lr: 1.0e-4
+  window_len: 64            # must ≤ training window length of RSSM for stability
+  image_size: 128           # must match encoder.image_shape in configs/rssm.yaml
+  batch_size: 16
+  num_workers: 4
+  val_ratio: 0.05
+  steps: 50000
+  lr: 3.0e-4
   weight_decay: 1.0e-4
-  val_split: 0.1
-  log_every: 50
-  save_every: 5
+  grad_clip: 100.0
+  log_every: 200
+  val_every: 2000
+  save_every: 2000
 
 paths:
   logdir: logs/critic
-  latent_dir: data/latents
-  checkpoint: checkpoints/critic/best.ckpt
+  rssm_checkpoint: checkpoints/rssm.pt
+  clean_root: /home/rzpan/WorkSpace/data/no_noops_datasets
+  poison_root: /home/rzpan/WorkSpace/data/Poisoned_Dataset
+  checkpoint: checkpoints/critic.pt

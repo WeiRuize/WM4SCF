@@ -2,7 +2,10 @@
 # Used by eval/eval_openvla.py and eval/eval_pi0.py.
 
 eval:
-  safety_threshold: 0.5
+  # Raw intrinsic-cost threshold; calibrate via scripts/calibrate_threshold.py
+  # (99-th percentile of clean-validation critic outputs).  Overwrite this
+  # number after calibration before running the full evaluation.
+  safety_threshold: 1.0
   gamma: 0.9
   num_episodes_per_task: 50       # LIBERO-10 → 500 total per experiment
   tasks:
@@ -23,6 +26,6 @@ ablation:
   rollout_horizons: [1, 4, 8, 16]   # π₀ chunk-horizon sweep (paper core ablation)
 
 paths:
-  rssm_checkpoint: checkpoints/rssm/best.ckpt
-  critic_checkpoint: checkpoints/critic/best.ckpt
+  rssm_checkpoint: checkpoints/rssm.pt
+  critic_checkpoint: checkpoints/critic.pt
   results_dir: eval_results

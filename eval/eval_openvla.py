@@ -100,9 +100,17 @@ def main():
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
-    # Merge in RSSM config so the guardian can rebuild the world model.
+    # Merge in RSSM config (encoder/rssm blocks for model reconstruction)
+    # and critic config (critic.mlp_* for SafetyCritic.from_config).
+    # We use a shallow merge that preserves top-level keys already in cfg.
+    def _merge(extra: dict):
+        for k, v in extra.items():
+            if k not in cfg:
+                cfg[k] = v
     with open("configs/rssm.yaml") as f:
-        cfg.update(yaml.safe_load(f))
+        _merge(yaml.safe_load(f))
+    with open("configs/critic.yaml") as f:
+        _merge(yaml.safe_load(f))
 
     # Dynamic import of env factory: e.g. "libero_envs.make_env"
     mod_path, fn_name = args.env.rsplit(".", 1)

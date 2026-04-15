@@ -81,5 +81,5 @@ training:
 # ── Paths ──────────────────────────────────────────────────────────────────
 paths:
   logdir: logs/rssm
-  traindir: data/trajectories
+  traindir: /home/rzpan/WorkSpace/data/no_noops_datasets
   checkpoint: checkpoints/rssm.pt

@@ -16,6 +16,16 @@ PROJECT_OVERVIEW §原则七, the history is ONLY updated with the real posterio
 state computed from `obs_t`; imagined states are used exclusively for danger
 scoring.
 
+Threshold semantics
+-------------------
+Under the self-supervised training scheme (train/train_critic.py) the
+critic output is NO LONGER a probability in [0, 1].  It is a non-negative
+real number approximating the discounted future one-step KL surprise of
+the frozen clean-only RSSM.  The threshold in configs/eval.yaml should
+therefore be calibrated from the validation-set clean histogram (e.g.
+99-th percentile of clean cost predictions) rather than interpreted as
+a probability.
+
 This module is pure inference: the RSSM, encoder, and SafetyCritic must all
 be loaded from checkpoints and frozen before being handed in.
 """
